@@ -1,0 +1,233 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: "Customer dimension."
+    columns:
+      - name: id
+        description: "Primary key (customer_id)."
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+
+  - name: dim_sellers
+    description: "Seller dimension with geolocation."
+    columns:
+      - name: id
+        description: "Primary key (seller_id)."
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+
+  - name: dim_products
+    description: "Product dimension with English category name."
+    columns:
+      - name: id
+        description: "Primary key (product_id)."
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+
+  - name: dim_reviews
+    description: "Review dimension (Type-2 SCD from reviews_dbt_scd_snapshot), one row per review version."
+    columns:
+      - name: id
+        description: "Surrogate primary key (dbt_scd_id) — unique per review version."
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+      - name: order_id
+        description: "Business key — NOT unique (history preserved). Joined from fact_orders.id."
+      - name: is_current
+        description: "TRUE for the live version of the review (dbt_valid_to IS NULL)."
+      - name: review_score
+        description: "1 (worst) to 5 (best)."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: INT64
+
+  - name: dim_geolocation
+    description: "Geolocation dimension (Type-2 SCD from geolocation_dbt_scd_snapshot), one row per zip-prefix version."
+    columns:
+      - name: id
+        description: "Surrogate primary key (dbt_scd_id) — unique per zip-prefix version."
+        tests:
+          - unique
+          - not_null
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+      - name: geolocation_zip_code_prefix
+        description: "Business key — NOT unique (history preserved)."
+      - name: is_current
+        description: "TRUE for the live version of the zip prefix (dbt_valid_to IS NULL)."
+
+  - name: fact_orders
+    description: "Order fact at order-item grain. Composite PK = (id, order_item_id)."
+    # Composite primary key: (id, order_item_id) must be unique together.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - id
+              - order_item_id
+    columns:
+      - name: id
+        description: "Part of the composite PK (order_id); FK to dim_reviews.order_id."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_reviews')
+                field: order_id
+              config:
+                # Not every order has a review, so a missing match is expected.
+                severity: warn
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+      - name: customer_id
+        description: "FK to dim_customers."
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: id
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: STRING
+      - name: order_status
+        description: "Order lifecycle status."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['approved','canceled','created','delivered','invoiced','processing','shipped','unavailable']
+      - name: order_purchase_timestamp
+        description: "Timestamp when the order was placed."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: TIMESTAMP
+      - name: order_approved_at
+        description: "Timestamp when the order was approved."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: TIMESTAMP
+      - name: order_delivered_carrier_date
+        description: "Timestamp when delivered to the carrier."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: TIMESTAMP
+      - name: order_delivered_customer_date
+        description: "Timestamp when delivered to the customer."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: TIMESTAMP
+      - name: order_estimated_delivery_date
+        description: "Estimated delivery timestamp."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: TIMESTAMP
+      - name: order_item_id
+        description: "Part of the composite PK (line number). Null for orders with no items (has_no_items)."
+        tests:
+          # not_null intentionally omitted: orders without line items keep a null here.
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: INT64
+      - name: product_id
+        description: "FK to dim_products."
+        tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: id
+              config:
+                severity: warn
+      - name: seller_id
+        description: "FK to dim_sellers. Null for orders with no items (has_no_items)."
+        tests:
+          # not_null intentionally omitted: null for orders without line items.
+          - relationships:
+              arguments:
+                to: ref('dim_sellers')
+                field: id
+              config:
+                severity: warn
+      - name: shipping_limit_date
+        description: "Timestamp of the item shipping deadline."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: TIMESTAMP
+      - name: price
+        description: "Item price."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: FLOAT64
+      - name: freight_value
+        description: "Freight cost for the item."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: FLOAT64
+      - name: payment_sequential
+        description: "Payment attempt number within the order."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: INT64
+      - name: payment_type
+        description: "Payment method (null coalesced to not_defined)."
+        tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['boleto','credit_card','debit_card','voucher','not_defined']
+      - name: payment_installments
+        description: "Number of payment installments."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: INT64
+      - name: payment_value
+        description: "Total payment amount."
+        tests:
+          - dbt_expectations.expect_column_values_to_be_of_type:
+              arguments:
+                column_type: FLOAT64
+      # Data-quality flag columns (ported from Charmaine's fact_orders_stage).
+      - name: has_invalid_delivery_date
+        description: "TRUE when the order was delivered before it was purchased."
+      - name: is_overdue_delivery
+        description: "TRUE when estimated delivery passed but the order was never delivered."
+      - name: is_high_value_product
+        description: "TRUE when the item price exceeds R$10,000."
+      - name: has_missing_delivery_date
+        description: "TRUE when status is 'delivered' but no delivery date is recorded."
+      - name: is_long_delivery
+        description: "TRUE when delivery took more than 30 days."
+      - name: has_missing_payment_info
+        description: "TRUE when payment_type is 'not_defined' or payment_value is null."
+      - name: has_no_items
+        description: "TRUE when the order has no matching line item."
